@@ -1,3 +1,5 @@
+<img width="405" height="644" alt="image" src="https://github.com/user-attachments/assets/0dcd40ed-9729-4094-8a4b-c653852521ba" />
+
 # Bounded Box Classification 📦🖼️
 
 This project focuses on **image-based object classification using bounding boxes**, where regions of interest are localized and classified using computer vision techniques. The goal is to accurately identify objects within images by first constraining the search space using bounding boxes, then applying classification logic to those regions.
@@ -61,5 +63,4 @@ The scripts in this project use Python functions to:
 - Draw these boxes onto images for visualization.
 
 
-## 🗂️ Repository Structure
 
