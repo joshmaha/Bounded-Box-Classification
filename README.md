@@ -2,7 +2,6 @@
   <img src="https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white"/>
   <img src="https://img.shields.io/badge/OpenCV-cv2-green?logo=opencv"/>
   <img src="https://img.shields.io/badge/NumPy-Scientific%20Computing-blue?logo=numpy"/>
-  <img src="https://img.shields.io/badge/Course-CAI%204841-red"/>
 </p>
 
 
