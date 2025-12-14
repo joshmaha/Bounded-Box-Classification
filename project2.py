@@ -50,63 +50,72 @@ def filter_top_keypoints(kp_ref, des_ref, kp_test, des_test, max_kp=3000):
     return ([kp_ref[i] for i in ref_idx], des_ref[ref_idx], [kp_test[i] for i in test_idx], des_test[test_idx])
 
 # stage 4- keypoint matching
-# match descriptors using lowe’s ratio test 
+# match descriptors using Lowe’s ratio test 
 def match_kps(des_ref_filtered, des_test_filtered, thresh=0.7):
-    good_matches = []
-    for ref_idx in range(len(des_ref_filtered)):  # loop through each reference descriptor
-        d_ref = des_ref_filtered[ref_idx]  # current reference descriptor
-        all_diffs = np.sqrt(np.sum((des_test_filtered - d_ref) ** 2, axis=1))  # compute euclidean distances to all test descriptors
-        smallest_two = np.argsort(all_diffs)[:2]  # get indices of the two smallest distances
-        best, second = all_diffs[smallest_two[0]], all_diffs[smallest_two[1]]  # best and second-best match distances
-        if best / second < thresh:  # apply lowe's ratio test
-            good_matches.append((ref_idx, smallest_two[0]))  # keep matches that pass ratio test
-    return good_matches  # return consistent matches
+    matches = []
+    for i, d_ref in enumerate(des_ref_filtered): # get Euclidean distances between one reference descriptor and all test descriptors
+        distances = euclidean_dist(des_test_filtered, d_ref)
+        if len(distances) < 2: 
+            continue# skip if there are not enough descriptors to compare
+        idx_sorted = np.argsort(distances) # get indices of the 2 closest matches
+        # best match must be significantly better than the second-best Lowe's ratio
+        if distances[idx_sorted[0]] / distances[idx_sorted[1]] < thresh:
+            matches.append((i, idx_sorted[0])) # add matches that passed Lowe's ratio test
 
-# stage 5- ransac
-# estimate affine transformation using random sampling
+    return [m for m in matches] # return most consistent matches that passed ratio test
+
+# stage 5- RANSAC
+# affine estimate using ransac
 def ransac_affine(kp_ref, kp_test, matches, num_iters=3000, thresh=5.0):
-    ref_pts = np.array([kp_ref[i].pt for i, j in matches], dtype=np.float32)  # extract source keypoint coordinates
-    test_pts = np.array([kp_test[j].pt for i, j in matches], dtype=np.float32)  # extract destination keypoint coordinates
+    src_pts = np.array([kp_ref[i].pt for i, _ in matches], dtype=np.float32)   # extract matched keypoint coordinates as arrays
+    dst_pts = np.array([kp_test[j].pt for _, j in matches], dtype=np.float32)
 
-    best = {'inliers': 0, 'matrix': None}  # store best model found
+    best_inliers = None # variables to track best affine matrix and inliers
+    best_inlier_count = 0
+    best_M = None
 
-    for a in range(num_iters):  # repeat for 3000 iterations
-        sel = np.random.choice(len(matches), 3, replace=False)  # randomly choose 3 point pairs
-        ref_sample, test_sample = ref_pts[sel], test_pts[sel]  # get the sample points
+    for a in range(num_iters):  # RANSAC loop to find most consistent model
+        idx = random.sample(range(len(matches)), 3) # randomly sample 3 matches
+        src_sample, dst_sample = src_pts[idx], dst_pts[idx]
 
-        if check_collinear(*ref_sample):  # skip if points are collinear
+        if check_collinear(src_sample[0], src_sample[1], src_sample[2]): # check for collinear points
             continue
 
-        try:  # try to compute affine matrix for sample
-            M = cv2.getAffineTransform(ref_sample, test_sample)
+        try: # compute affine transformation for this random sample
+            M = cv2.getAffineTransform(src_sample, dst_sample)
         except:
-            continue  # skip invalid transformation
+            continue # skip invalid transformations
 
-        # compute determinant to check if transformation is valid
+        # check if transformation is degenerate by computing determinant of the linear part
         a, b, c, d = M[0, 0], M[0, 1], M[1, 0], M[1, 1]
-        det = abs(a * d - b * c)
-        if not (0.001 < det < 1000):  # reject degenerate transformations
+        det = abs(a*d - b*c)
+        if det < 0.001 or det > 1000:  # ensure det is not too small and too large
             continue
-
-        # project all reference points using current affine matrix
-        projected = np.dot(ref_pts, M[:, :2].T) + M[:, 2]
         
-        # compute distances between projected and actual test points
-        errors = np.sqrt(np.sum((projected - test_pts) ** 2, axis=1))
-        inliers = errors < thresh  # mark inliers within distance threshold
-        count = np.count_nonzero(inliers)  # count total inliers
+        # project all source points onto test image using M
+        projected = np.array([
+            [M[0,0]*x + M[0,1]*y + M[0,2], M[1,0]*x + M[1,1]*y + M[1,2]]
+            for x, y in src_pts
+        ])
 
-        if count > best['inliers']:  # update best model if current one is better
-            best = {'inliers': count, 'matrix': M, 'mask': inliers}
+        
+        # compute Euclidean distances between projected points and actual destination points
+        distances = np.sqrt(np.sum((projected - dst_pts)**2, axis=1))
+        inliers = distances < thresh   # identify inlier points which have a projection error below the threshold
+        inlier_count = np.sum(inliers)
 
-    if best['matrix'] is None:  # return none if no valid model found
+        if inlier_count > best_inlier_count: # update best affine matrix if this model has more inliers
+            best_inlier_count = inlier_count
+            best_M = M
+            best_inliers = inliers
+
+    if best_M is None or best_inlier_count < 3: # if no valid model found return None
         return None, None
 
-    if best['inliers'] > 3:  # refine affine matrix using all inliers
-        best['matrix'] = fit_affine_least_squares(ref_pts[best['mask']], test_pts[best['mask']])
-    
-    return best['matrix'], best['mask']  # return final affine matrix and inlier mask
+    if best_inlier_count > 3: # re-fit the affine transform using all inliers
+        best_M = fit_affine_least_squares(src_pts[best_inliers], dst_pts[best_inliers])
 
+    return best_M, best_inliers # return best affine transformation matrix and the inlier mask
 
 # stage 6: refine affine matrix using least squares fitting
 def fit_affine_least_squares(src_pts, dst_pts):
