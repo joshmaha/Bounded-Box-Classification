@@ -50,6 +50,13 @@ This project is written in Python 3 and works with basic imaging libraries.
   3. Install Dependencies
      ```bash
      pip install -r requirements.txt
+   
+   4. Visualize Annotations
+      ```bash
+      $ python draw.py -f /home/user/1.png -a /home/user/1.txt
+
+
+---
 
 ## 🧠 How It Works
 ### Bounding Box Concept
@@ -61,6 +68,10 @@ The scripts in this project use Python functions to:
 - Compute bounding boxes around shapes or features.
 - Calculate metrics like Intersection Over Union (IOU) to evaluate overlap.
 - Draw these boxes onto images for visualization.
+
+Take a look at this example test cases and the associated coordinated for Rocky
+<img width="1338" height="713" alt="image" src="https://github.com/user-attachments/assets/6276f937-f38d-49c0-a031-a3ef1ae88728" align="center"/>
+
 
 
 
