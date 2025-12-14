@@ -73,5 +73,8 @@ Take a look at this example test cases and the associated coordinated for Rocky
 <img width="1338" height="713" alt="image" src="https://github.com/user-attachments/assets/6276f937-f38d-49c0-a031-a3ef1ae88728" align="center"/>
 
 
+<p align="center">
+<img width="1338" height="713" alt="image" src="https://github.com/user-attachments/assets/6276f937-f38d-49c0-a031-a3ef1ae88728" align="center"/>
+</p>
 
 
