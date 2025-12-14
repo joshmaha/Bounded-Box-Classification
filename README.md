@@ -1,8 +1,6 @@
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue?logo=python&logoColor=white)
 ![OpenCV](https://img.shields.io/badge/OpenCV-cv2-green?logo=opencv)
 ![NumPy](https://img.shields.io/badge/NumPy-Scientific%20Computing-blue?logo=numpy)
-![Course](https://img.shields.io/badge/Course-CAI4841%20Computer%20Vision-red)
-![University](https://img.shields.io/badge/University-University%20of%20South%20Florida-darkgreen)
 
 <p align="center">
 <img width="405" height="644" alt="image" src="https://github.com/user-attachments/assets/0dcd40ed-9729-4094-8a4b-c653852521ba" />
