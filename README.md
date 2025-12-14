@@ -1,0 +1,65 @@
+# Bounded Box Classification 📦🖼️
+
+This project focuses on **image-based object classification using bounding boxes**, where regions of interest are localized and classified using computer vision techniques. The goal is to accurately identify objects within images by first constraining the search space using bounding boxes, then applying classification logic to those regions.
+
+This repository serves as an experimental and educational project exploring object localization, feature extraction, and classification pipelines.
+
+---
+
+## 📌 Project Overview
+
+In many real-world computer vision applications (e.g., robotics, autonomous vehicles, surveillance, and medical imaging), it is inefficient or impractical to classify an entire image at once. Instead, **bounded box classification** allows systems to:
+
+- Focus computation on relevant regions  
+- Improve classification accuracy  
+- Reduce noise and background interference  
+
+This project demonstrates how bounding boxes can be used as a preprocessing step for object classification.
+
+---
+
+## 🧠 Key Concepts Covered
+
+- Bounding box representation (x, y, width, height)
+- Region of Interest (ROI) extraction
+- Image preprocessing and normalization
+- Feature extraction from bounded regions
+- Supervised classification of detected objects
+- Evaluation of classification performance
+
+---
+
+
+## ⚙️ Installation & Dependencies
+
+This project is written in Python 3 and works with basic imaging libraries.
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/joshmaha/Bounded-Box-Classification.git
+   cd Bounded-Box-Classification
+
+2. Create the environment
+   ```bash
+   python -m venv venv
+   source venv/bin/activate   # macOS / Linux
+   venv\Scripts\activate      # Windows PowerShell
+
+  3. Install Dependencies
+     ```bash
+     pip install -r requirements.txt
+
+## 🧠 How It Works
+### Bounding Box Concept
+A bounding box is a rectangle defined over an image region that encloses an object of interest. The box can be represented with either:
+- Coordinates of two corners (x1, y1, x2, y2), or
+- A center point with a width/height (x, y, w, h). 
+
+The scripts in this project use Python functions to:
+- Compute bounding boxes around shapes or features.
+- Calculate metrics like Intersection Over Union (IOU) to evaluate overlap.
+- Draw these boxes onto images for visualization.
+
+
+## 🗂️ Repository Structure
+
