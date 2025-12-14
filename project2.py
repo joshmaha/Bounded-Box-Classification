@@ -1,332 +1,201 @@
-#!/usr/bin/env python3
-"""
-project2.py
-
-Usage:
-    Provide the test image filename on stdin (the grader will do this).
-    Example (during development): echo "test.png" | python3 project2.py
-
-Notes:
-- Uses cv2 and numpy only.
-- Uses OpenCV to detect and compute keypoints/descriptors (SIFT).
-- Matching (nearest neighbor + ratio test) is implemented manually (no cv2 matchers).
-- Uses affine estimation from triplets (cv2.getAffineTransform) inside a simple RANSAC loop.
-- Computes oriented bounding box center (X,Y), height (H), and angle (A) in degrees clockwise.
-- If matching fails, outputs a safe fallback: centered with H=0 and A=0.
-
-"""
-
-import sys
 import cv2
 import numpy as np
-import math
-import time
+import random
 
-# --- PARAMETERS (tweak for robustness / speed) ---
-MAX_REF_KP = 2000           # limit reference keypoints (SIFT) for speed
-MAX_TEST_KP = 2000          # limit test keypoints
-NN_RATIO = 0.75             # Lowe ratio test threshold
-RANSAC_ITERS = 1500         # RANSAC iterations for triplet sampling
-INLIER_DIST = 10.0          # pixels: distance threshold to consider a match an inlier
-MIN_INLIERS = 12            # minimum inliers to accept a model
-TIME_LIMIT = 18.0           # seconds (safe margin under 20s)
+# helper functions
+# # get Euclidean distance of 2 vectors
+# def euclidean_distance(vec1, vec2):
+#     return np.sqrt(np.sum((vec1 - vec2) ** 2))
 
-# -------------------------------------------------
+# get Euclidean distance of one descriptor to all other descriptors
+def euclidean_dist(descriptors, ref_descriptor):
+    return np.sqrt(np.sum((descriptors - ref_descriptor) ** 2, axis=1)) # axis=1 to sum across the array descriptor as opposed to axis=0 which sums down
 
-def read_images(test_filename):
-    ref = cv2.imread('reference.png', cv2.IMREAD_COLOR)
-    test = cv2.imread(test_filename, cv2.IMREAD_COLOR)
-    if ref is None:
-        raise FileNotFoundError("reference.png not found in current directory")
-    if test is None:
-        raise FileNotFoundError(f"test image '{test_filename}' not found or cannot be read")
-    return ref, test
+# check if 3 points are basically collinear
+def check_collinear(p1, p2, p3, thresh=0.001):
+    area = abs((p1[0]*(p2[1]-p3[1]) + p2[0]*(p3[1]-p1[1]) + p3[0]*(p1[1]-p2[1])) / 2.0)
+    return area < thresh
 
-def detect_and_describe(img, use_sift=True, max_kp=2000):
-    """Detect keypoints and compute descriptors. Returns keypoints (list) and descriptors (numpy array)."""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    if use_sift:
-        # SIFT is robust; fallback to ORB if not available
-        try:
-            sift = cv2.SIFT_create(nfeatures=max_kp)
-        except AttributeError:
-            # older opencv versions or unavailable -> use ORB
-            orb = cv2.ORB_create(nfeatures=max_kp)
-            kp, des = orb.detectAndCompute(gray, None)
-            return kp, des
-        kp, des = sift.detectAndCompute(gray, None)
-        # SIFT returns float32 descriptors
-        return kp[:max_kp], (des[:max_kp].astype(np.float32) if des is not None else None)
-    else:
-        orb = cv2.ORB_create(nfeatures=max_kp)
-        kp, des = orb.detectAndCompute(gray, None)
-        return kp[:max_kp], des
+# stage 1- load images 
+# load test and reference images
+def load_images():
+    ref_img = cv2.imread('reference.png')
+    filename = input().rstrip()
+    test_img = cv2.imread(filename, cv2.IMREAD_COLOR)
 
-def descriptors_to_array(des):
-    """Ensure descriptors are a numpy array (None safe)."""
-    if des is None:
-        return None
-    return np.asarray(des)
+    if ref_img is None: # error handling 
+        raise FileNotFoundError("Reference image not found.")
+    if test_img is None:
+        raise FileNotFoundError(f"Test image: {filename} not found.")
+    return ref_img, test_img
 
-def match_descriptors_manual(desc1, desc2, is_float=True, ratio=0.75):
-    """
-    Manual nearest neighbor matching with Lowe ratio test.
-    desc1: NxD descriptors (reference)
-    desc2: MxD descriptors (test)
-    returns list of matches: [(i, j, dist_ij), ...] where i indexes desc1 and j indexes desc2
-    """
-    if desc1 is None or desc2 is None:
-        return []
+# stage 2- extract keypoints 
+# use sift to get all keypoints and descriptors
+def sift_get_keypts(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) # convert to grayscale
+    sift = cv2.SIFT_create()  # create sift object to perform sift detection
+    keypt, des = sift.detectAndCompute(gray, None) # get list of keypoints and corresponding descriptor array Nx128
+    return keypt, des
 
-    # For ORB (uint8 binary), we can compute Hamming via bitwise xor -> count non-zero bits,
-    # but using numpy broadcasting with bit_count is not as trivial. We will convert to float and use Euclidean,
-    # which is acceptable and simpler; for binary descriptors this is still okay.
-    # To keep it efficient, we compute in chunks if needed.
-    A = desc1.astype(np.float32)
-    B = desc2.astype(np.float32)
+# stage 3- filter best keypoints 
+# keep the top 3000 keypoints by response for both images
+def filter_top_keypoints(kp_ref, des_ref, kp_test, des_test, max_kp=3000):
+    responses_ref = np.array([keypt.response for keypt in kp_ref]) # get the strength of each keypoint and store in arrays using the .response operator
+    responses_test = np.array([keypt.response for keypt in kp_test])
 
-    matches = []
+    ref_idx = np.argsort(responses_ref)[::-1][:max_kp] # get indices that would sort the responses in ascending order, then reverse to descending order
+    test_idx = np.argsort(responses_test)[::-1][:max_kp]
 
-    # To avoid building the full NxM matrix if very large, process in chunks of ref descriptors
-    CHUNK = 512
-    N = A.shape[0]
-    for start in range(0, N, CHUNK):
-        end = min(N, start + CHUNK)
-        a_chunk = A[start:end]  # shape (k, D)
-        # Compute squared distances: (a-b)^2 = a^2 + b^2 - 2ab
-        aa = np.sum(a_chunk * a_chunk, axis=1)[:, None]  # (k,1)
-        bb = np.sum(B * B, axis=1)[None, :]             # (1,M)
-        ab = np.dot(a_chunk, B.T)                       # (k,M)
-        d2 = aa + bb - 2.0 * ab                         # (k, M)
-        # Numerical issues
-        d2 = np.maximum(d2, 0.0)
-        # find best and second best
-        idx1 = np.argmin(d2, axis=1)
-        best = d2[np.arange(d2.shape[0]), idx1]
-        # mask them out to find second best
-        d2_masked = d2.copy()
-        d2_masked[np.arange(d2.shape[0]), idx1] = np.inf
-        idx2 = np.argmin(d2_masked, axis=1)
-        second = d2_masked[np.arange(d2.shape[0]), idx2]
+    # return filtered keypoints and descriptors for both images
+    return ([kp_ref[i] for i in ref_idx], des_ref[ref_idx], [kp_test[i] for i in test_idx], des_test[test_idx])
 
-        for k, (i2, b2, s2) in enumerate(zip(idx1, best, second)):
-            # ratio test on sqrt distances (Euclidean)
-            if s2 == np.inf:
-                continue
-            if math.sqrt(b2) < ratio * math.sqrt(s2):
-                matches.append((start + k, int(i2), float(math.sqrt(b2))))
-    return matches
+# stage 4- keypoint matching
+# match descriptors using lowe’s ratio test 
+def match_kps(des_ref_filtered, des_test_filtered, thresh=0.7):
+    good_matches = []
+    for ref_idx in range(len(des_ref_filtered)):  # loop through each reference descriptor
+        d_ref = des_ref_filtered[ref_idx]  # current reference descriptor
+        all_diffs = np.sqrt(np.sum((des_test_filtered - d_ref) ** 2, axis=1))  # compute euclidean distances to all test descriptors
+        smallest_two = np.argsort(all_diffs)[:2]  # get indices of the two smallest distances
+        best, second = all_diffs[smallest_two[0]], all_diffs[smallest_two[1]]  # best and second-best match distances
+        if best / second < thresh:  # apply lowe's ratio test
+            good_matches.append((ref_idx, smallest_two[0]))  # keep matches that pass ratio test
+    return good_matches  # return consistent matches
 
-def ransac_affine(ref_pts, test_pts, matches, img_shape, time_budget=TIME_LIMIT):
-    """
-    RANSAC over affine transformations computed from 3-point correspondences.
-    ref_pts: Nx2 numpy array of reference keypoint coordinates
-    test_pts: Mx2 numpy array of test keypoint coordinates
-    matches: list of (i_ref, j_test, dist)
-    Returns best affine 2x3 matrix and mask of inliers (indices into matches list)
-    """
-    if len(matches) < 3:
-        return None, []
+# stage 5- ransac
+# estimate affine transformation using random sampling
+def ransac_affine(kp_ref, kp_test, matches, num_iters=3000, thresh=5.0):
+    ref_pts = np.array([kp_ref[i].pt for i, j in matches], dtype=np.float32)  # extract source keypoint coordinates
+    test_pts = np.array([kp_test[j].pt for i, j in matches], dtype=np.float32)  # extract destination keypoint coordinates
 
-    # Precompute matched point arrays for speed
-    ref_idx = np.array([m[0] for m in matches], dtype=int)
-    test_idx = np.array([m[1] for m in matches], dtype=int)
-    src = ref_pts[ref_idx]   # Nx2
-    dst = test_pts[test_idx] # Nx2
+    best = {'inliers': 0, 'matrix': None}  # store best model found
 
-    best_M = None
-    best_inliers = []
-    best_count = 0
-    n_matches = src.shape[0]
+    for a in range(num_iters):  # repeat for 3000 iterations
+        sel = np.random.choice(len(matches), 3, replace=False)  # randomly choose 3 point pairs
+        ref_sample, test_sample = ref_pts[sel], test_pts[sel]  # get the sample points
 
-    rng = np.random.default_rng(seed=12345)
-    t_start = time.time()
-
-    # RANSAC loop
-    iters = RANSAC_ITERS
-    for it in range(iters):
-        # Time check
-        if time.time() - t_start > time_budget:
-            break
-
-        # randomly pick 3 distinct indices
-        ids = rng.choice(n_matches, size=3, replace=False)
-        p_src = src[ids].astype(np.float32)
-        p_dst = dst[ids].astype(np.float32)
-
-        # cv2.getAffineTransform needs shape (3,2)
-        try:
-            M = cv2.getAffineTransform(p_src, p_dst)  # 2x3 float32
-        except Exception:
+        if check_collinear(*ref_sample):  # skip if points are collinear
             continue
 
-        # apply M to all src points
-        ones = np.ones((n_matches, 1), dtype=np.float32)
-        src_hom = np.hstack([src.astype(np.float32), ones])  # Nx3
-        pred = (M.reshape(2,3) @ src_hom.T).T  # Nx2
+        try:  # try to compute affine matrix for sample
+            M = cv2.getAffineTransform(ref_sample, test_sample)
+        except:
+            continue  # skip invalid transformation
 
-        # distances
-        dists = np.linalg.norm(pred - dst, axis=1)
+        # compute determinant to check if transformation is valid
+        a, b, c, d = M[0, 0], M[0, 1], M[1, 0], M[1, 1]
+        det = abs(a * d - b * c)
+        if not (0.001 < det < 1000):  # reject degenerate transformations
+            continue
 
-        inlier_mask = dists <= INLIER_DIST
-        inlier_count = int(np.count_nonzero(inlier_mask))
+        # project all reference points using current affine matrix
+        projected = np.dot(ref_pts, M[:, :2].T) + M[:, 2]
+        
+        # compute distances between projected and actual test points
+        errors = np.sqrt(np.sum((projected - test_pts) ** 2, axis=1))
+        inliers = errors < thresh  # mark inliers within distance threshold
+        count = np.count_nonzero(inliers)  # count total inliers
 
-        # update best
-        if inlier_count > best_count and inlier_count >= MIN_INLIERS:
-            best_count = inlier_count
-            best_inliers = np.nonzero(inlier_mask)[0].tolist()
-            best_M = M.copy()
+        if count > best['inliers']:  # update best model if current one is better
+            best = {'inliers': count, 'matrix': M, 'mask': inliers}
 
-            # early exit if very good
-            if best_count > 0.8 * n_matches:
-                break
+    if best['matrix'] is None:  # return none if no valid model found
+        return None, None
 
-    # If we have a decent model, refine using all inliers via least-squares affine (cv2.estimateAffinePartial2D allowed? but it's OpenCV matching function)
-    # Simpler: re-compute M using cv2.getAffineTransform on best 3 inliers or do a least squares fit:
-    if best_M is not None and len(best_inliers) >= 3:
-        # Fit using a simple least squares: find affine A (2x3) minimizing ||A*[x,y,1]^T - [u,v]^T||
-        in_src = src[best_inliers].astype(np.float32)
-        in_dst = dst[best_inliers].astype(np.float32)
-        # Build matrix for least squares: for each point x,y -> rows for u and v
-        # [ x y 1 0 0 0 ] [a11 a12 a13]^T = u
-        # [ 0 0 0 x y 1 ] [a21 a22 a23]^T = v
-        k = in_src.shape[0]
-        A = np.zeros((2*k, 6), dtype=np.float32)
-        b = np.zeros((2*k,), dtype=np.float32)
-        for i in range(k):
-            x, y = in_src[i]
-            u, v = in_dst[i]
-            A[2*i, 0:3] = [x, y, 1]
-            A[2*i+1, 3:6] = [x, y, 1]
-            b[2*i] = u
-            b[2*i+1] = v
-        # Solve least squares
-        try:
-            sol, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
-            M_refined = np.array([[sol[0], sol[1], sol[2]],
-                                   [sol[3], sol[4], sol[5]]], dtype=np.float32)
-            best_M = M_refined
-        except Exception:
-            pass
+    if best['inliers'] > 3:  # refine affine matrix using all inliers
+        best['matrix'] = fit_affine_least_squares(ref_pts[best['mask']], test_pts[best['mask']])
+    
+    return best['matrix'], best['mask']  # return final affine matrix and inlier mask
 
-    return best_M, best_inliers
 
-def compute_bbox_from_affine(M, ref_shape):
-    """
-    Given affine M (2x3) mapping reference coords -> test coords,
-    and the reference image shape (h_ref, w_ref), assume the bounding box of Rocky in
-    the reference is the whole reference image (center and full height). Compute (cx, cy, H, angle).
-    Returns integers (cx, cy, H, angle)
-    """
-    h_ref, w_ref = ref_shape[0], ref_shape[1]
-    # reference box center and top/bottom center in ref coordinates
-    cx_ref = w_ref / 2.0
-    cy_ref = h_ref / 2.0
-    top_ref = np.array([cx_ref, cy_ref - h_ref/2.0], dtype=np.float32)
-    bot_ref = np.array([cx_ref, cy_ref + h_ref/2.0], dtype=np.float32)
-    center_ref = np.array([cx_ref, cy_ref], dtype=np.float32)
+# stage 6: refine affine matrix using least squares fitting
+def fit_affine_least_squares(src_pts, dst_pts):
+    N = src_pts.shape[0]  # num of pt matches
 
-    def transform_pt(pt):
-        x, y = float(pt[0]), float(pt[1])
-        u = M[0,0]*x + M[0,1]*y + M[0,2]
-        v = M[1,0]*x + M[1,1]*y + M[1,2]
-        return np.array([u, v], dtype=np.float32)
+    # initialize least squares formula: A_mat * affine coeefficient = b_vec
+    A_mat = np.zeros((2 * N, 6)) # A_mat has 2N rows (x and y equations per point) and 6 unknowns (affine parameters)
+    b_vec = np.zeros((2 * N,))
 
-    top_t = transform_pt(top_ref)
-    bot_t = transform_pt(bot_ref)
-    center_t = transform_pt(center_ref)
+    # build A_mat and b_vec using the point correspondences
+    for i in range(N):
+        x, y = src_pts[i] # source point coordinates
+        x_p, y_p = dst_pts[i] # corresponding destination point coordinates
+        
+        # fill x-equation row: a*x + b*y + tx = x'
+        A_mat[2 * i, :3] = [x, y, 1]
+        b_vec[2 * i] = x_p
 
-    # height is distance between top and bottom transformed centers
-    v = bot_t - top_t
-    height = float(np.linalg.norm(v))
+        # fill y-equation row: c*x + d*y + ty = y'
+        A_mat[2 * i + 1, 3:] = [x, y, 1]
+        b_vec[2 * i + 1] = y_p
 
-    # angle: clockwise rotation from vertical to v
-    vx, vy = float(v[0]), float(v[1])
-    # If height is ~0, fallback angle 0
-    if height < 1e-6:
-        angle = 0.0
-    else:
-        # atan2(vx, vy) gives angle between vertical (0,1) and v, positive when rotated clockwise
-        angle_rad = math.atan2(vx, vy)
-        angle = math.degrees(angle_rad)
-        # normalize to [0,360)
-        angle = angle % 360.0
+    # solve for affine parameters using least squares to minimize total squared error between projected and actual points
+    aff_values, *_ = np.linalg.lstsq(A_mat, b_vec)
 
-    cx = int(round(float(center_t[0])))
-    cy = int(round(float(center_t[1])))
-    H = int(round(height))
-    A = int(round(angle)) % 360
-    return cx, cy, H, A
+    # reshape into a 2x3 affine transformation matrix
+    M = np.array([
+        [aff_values[0], aff_values[1], aff_values[2]],  # first row: [a, b, tx]
+        [aff_values[3], aff_values[4], aff_values[5]]   # second row: [c, d, ty]
+    ])
+    return M  # return refined affine transformation matrix
 
+# stage 7- bounding box 
+# build bounding box
+def compute_bounding_box(ref_img, M):
+    ref_h, ref_w = ref_img.shape[:2] # get reference image dimensions
+    ref_corners = np.array([[0,0],[ref_w,0],[ref_w,ref_h],[0,ref_h]]) # transform reference bounding box corners to test image
+
+    # apply affine transformation to each corner point
+    test_corners = np.array([
+        [M[0,0]*x + M[0,1]*y + M[0,2], M[1,0]*x + M[1,1]*y + M[1,2]]
+        for x, y in ref_corners
+    ])
+
+    # find center and dimensions from transformed corners
+    center = np.mean(test_corners, axis=0) # compute avg of the 4 transformed corner coordinates
+    X, Y = int(round(center[0])), int(round(center[1])) #  center of bounding box in test image
+
+    scale_x = np.sqrt(M[0,0]**2 + M[1,0]**2) # get bounding box height/width from the scale of the transformation using scale of the transformation matrix
+    scale_y = np.sqrt(M[0,1]**2 + M[1,1]**2)
+    H = round(ref_h * (scale_x + scale_y) / 2) # height is the scaled reference height
+
+    A = round(np.degrees(np.arctan2(M[1,0], M[0,0])) % 360) # get angle from transformation matrix M
+    X = max(0, min(X, 1999))
+    Y = max(0, min(Y, 1499))
+    H = max(1, min(H, 1499))
+
+    return X, Y, H, A # display final output
+
+# main function
 def main():
-    # read filename from stdin as required by assignment
-    filename = sys.stdin.readline().rstrip()
-    if filename == '':
-        # If interactive testing, allow a filename via command-line argument
-        if len(sys.argv) >= 2:
-            filename = sys.argv[1]
-        else:
-            print("0 0 0 0")
-            return
+    ref_img, test_img = load_images() # load images
+    kp_ref, des_ref = sift_get_keypts(ref_img) # get keypoints and descriptors for reference image using sift
+    kp_test, des_test = sift_get_keypts(test_img) # get keypoints and descriptors for test image using sift
 
-    try:
-        ref_img, test_img = read_images(filename)
-    except FileNotFoundError as e:
+    kp_ref_filtered, des_ref_filtered, kp_test_filtered, des_test_filtered = filter_top_keypoints(kp_ref, des_ref, kp_test, des_test, max_kp=3000) # keep only the best keypoints
+
+    matches = match_kps(des_ref_filtered, des_test_filtered) # match descriptors using lowe's ratio
+    if len(matches) < 3:
         print("0 0 0 0")
         return
 
-    # Detect keypoints and descriptors
-    kp_ref, des_ref = detect_and_describe(ref_img, use_sift=True, max_kp=MAX_REF_KP)
-    kp_test, des_test = detect_and_describe(test_img, use_sift=True, max_kp=MAX_TEST_KP)
-
-    # Convert to arrays
-    des_ref_arr = descriptors_to_array(des_ref)
-    des_test_arr = descriptors_to_array(des_test)
-
-    # Build list of keypoint coordinates
-    ref_pts = np.array([kp.pt for kp in kp_ref], dtype=np.float32) if kp_ref is not None else np.zeros((0,2), dtype=np.float32)
-    test_pts = np.array([kp.pt for kp in kp_test], dtype=np.float32) if kp_test is not None else np.zeros((0,2), dtype=np.float32)
-
-    # Manual matching (nearest neighbor + ratio test)
-    matches = match_descriptors_manual(des_ref_arr, des_test_arr, is_float=True, ratio=NN_RATIO)
-    # matches is list of (i_ref, j_test, dist)
-    if len(matches) == 0:
-        # fallback: no matches found
-        W = test_img.shape[1]
-        H_img = test_img.shape[0]
-        # safe fallback: center of image, zero height
-        print(f"{W//2} {H_img//2} 0 0")
-        return
-
-    # RANSAC to find best affine
-    M, inliers = ransac_affine(ref_pts, test_pts, matches, test_img.shape, time_budget=TIME_LIMIT)
+    M, inliers = ransac_affine(kp_ref_filtered, kp_test_filtered, matches) # get best affine transformation matrix and the inlier mask
     if M is None:
-        # Fallback: use the best single match to estimate a small box
-        # Use the match with smallest descriptor distance
-        matches_sorted = sorted(matches, key=lambda x: x[2])
-        best = matches_sorted[0]
-        j_test = best[1]
-        x, y = test_pts[j_test]
-        # small guess: height = 100
-        h_guess = 200
-        # output center and zero angle
-        cx = int(round(x))
-        cy = int(round(y))
-        H_out = int(h_guess)
-        A_out = 0
-        print(f"{cx} {cy} {H_out} {A_out}")
+        print("0 0 0 0")
         return
 
-    # Compute oriented bounding box parameters from affine
-    cx, cy, H_box, A_deg = compute_bbox_from_affine(M, ref_img.shape)
-    # Clamp results to image boundaries and sensible ranges
-    W_test = test_img.shape[1]
-    H_test = test_img.shape[0]
-    cx = max(0, min(W_test-1, cx))
-    cy = max(0, min(H_test-1, cy))
-    H_box = max(0, min(H_test-1, H_box))
-
-    print(f"{cx} {cy} {H_box} {A_deg}")
+    X, Y, H, A = compute_bounding_box(ref_img, M) # print bounding box coordinates
+    print(f"{X} {Y} {H} {A}")
 
 if __name__ == "__main__":
     main()
+
+# ------------------------------------------------------------
+# Project 2 Computer Vision (CAI4841)
+# Joshua Maharaj U24183946
+# Acknowledgment:
+# Portions of this code such as the for loop from lines 131-141 in the 
+# fit_affine_least_squares function and the
+# code to get the test corners from each point in the test image in lines 155-161
+# were refined and modified using ChatGPt after debugging. 
+# ------------------------------------------------------------
