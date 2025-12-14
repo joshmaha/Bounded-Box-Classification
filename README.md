@@ -8,8 +8,10 @@
 <p align="center">
 <img width="405" height="644" alt="image" src="https://github.com/user-attachments/assets/0dcd40ed-9729-4094-8a4b-c653852521ba" />
 </p> 
+
 # Bounded Box Classification
-### Oriented Bounding Box Detection via Keypoint Matching (USF – CAI 4841)
+
+## Oriented Bounding Box Detection via Keypoint Matching (USF – CAI 4841)
 
 
 This project focuses on **image-based object classification using bounding boxes**, where regions of interest are localized and classified using computer vision techniques. The goal is to accurately identify objects within images by first constraining the search space using bounding boxes, then applying classification logic to those regions. It intentionally avoids machine learning and instead relies on classical
